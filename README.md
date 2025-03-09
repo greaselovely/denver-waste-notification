@@ -83,7 +83,7 @@ Run the script on Sundays to get a notification about Monday's collection:
 Run the script regardless of the day of the week:
 
 ```bash
-./main.py --force
+./main.py -f or --force 
 ```
 
 ### Help
@@ -91,13 +91,19 @@ Run the script regardless of the day of the week:
 Display help information:
 
 ```bash
-./main.py --help
+./main.py -h or --help
 ```
 
 Get detailed help about finding your ReCollect IDs:
 
 ```bash
-./main.py --config-help
+./main.py -c or --config-help
+```
+
+Print to Screen with no notifications
+
+```bash
+./main.py -d or --dump
 ```
 
 ## Automation
