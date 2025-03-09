@@ -38,7 +38,7 @@ def print_config_help():
     print("service_id: XXX (a numeric ID)")
     print("=======================================\n")
 
-def load_config():
+def load_config(check_notifications=True):
     """Load configuration from JSON file or create it if it doesn't exist"""
     default_config = {
         "recollect": {
@@ -80,27 +80,29 @@ def load_config():
             sys.exit(1)
         
         # Check if at least one notification method is enabled and properly configured
-        pushover_enabled = config.get("notifications", {}).get("pushover", {}).get("enabled", False)
-        ntfy_enabled = config.get("notifications", {}).get("ntfy", {}).get("enabled", False)
-        
-        if pushover_enabled:
-            pushover_config = config.get("notifications", {}).get("pushover", {})
-            if not pushover_config.get("user_key") or not pushover_config.get("api_token"):
-                print("Pushover is enabled but missing required configuration")
-                print("Please update your configuration file.")
+        # Only check this if check_notifications is True
+        if check_notifications:
+            pushover_enabled = config.get("notifications", {}).get("pushover", {}).get("enabled", False)
+            ntfy_enabled = config.get("notifications", {}).get("ntfy", {}).get("enabled", False)
+            
+            if pushover_enabled:
+                pushover_config = config.get("notifications", {}).get("pushover", {})
+                if not pushover_config.get("user_key") or not pushover_config.get("api_token"):
+                    print("Pushover is enabled but missing required configuration")
+                    print("Please update your configuration file.")
+                    sys.exit(1)
+            
+            if ntfy_enabled:
+                ntfy_config = config.get("notifications", {}).get("ntfy", {})
+                if not ntfy_config.get("topic"):
+                    print("ntfy.sh is enabled but missing required topic")
+                    print("Please update your configuration file.")
+                    sys.exit(1)
+            
+            if not pushover_enabled and not ntfy_enabled:
+                print("No notification methods are enabled in the configuration")
+                print("Please enable at least one notification method.")
                 sys.exit(1)
-        
-        if ntfy_enabled:
-            ntfy_config = config.get("notifications", {}).get("ntfy", {})
-            if not ntfy_config.get("topic"):
-                print("ntfy.sh is enabled but missing required topic")
-                print("Please update your configuration file.")
-                sys.exit(1)
-        
-        if not pushover_enabled and not ntfy_enabled:
-            print("No notification methods are enabled in the configuration")
-            print("Please enable at least one notification method.")
-            sys.exit(1)
             
         return config
     except Exception as e:
@@ -222,7 +224,30 @@ def get_collection_data(config):
         print(f"Error fetching collection data: {e}")
         return None
 
+def get_collections_by_date(data):
+    """Parse collection data and organize by date"""
+    if not data or "events" not in data:
+        return {}
+    
+    collections_by_date = {}
+    
+    for event in data["events"]:
+        day = event.get("day")
+        if not day:
+            continue
+            
+        if day not in collections_by_date:
+            collections_by_date[day] = []
+            
+        for flag in event.get("flags", []):
+            collection_type = flag.get("subject")
+            if collection_type and collection_type not in collections_by_date[day]:
+                collections_by_date[day].append(collection_type)
+    
+    return collections_by_date
+
 def get_tomorrow_collections(data):
+    """Get collection types for tomorrow only"""
     if not data or "events" not in data:
         return []
     
@@ -239,6 +264,68 @@ def get_tomorrow_collections(data):
                     collection_types.append(collection_type)
     
     return collection_types
+
+def print_collection_summary(data):
+    """Print a summary of collection data for the tomorrow"""
+    collections_by_date = get_collections_by_date(data)
+    
+    if not collections_by_date:
+        print("No waste collections scheduled for the tomorrow.")
+        return
+    
+    try:
+        from tabulate import tabulate
+        
+        # Prepare table data
+        table_data = []
+        for date_str in sorted(collections_by_date.keys()):
+            try:
+                date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                formatted_date = date_obj.strftime("%A, %B %d, %Y")
+            except ValueError:
+                formatted_date = date_str
+                
+            collections = collections_by_date[date_str]
+            if collections:
+                collection_str = ", ".join(collections)
+            else:
+                collection_str = "No collections scheduled"
+                
+            table_data.append([formatted_date, collection_str])
+        
+        # Create a nice table with the tabulate library
+        table = tabulate(
+            table_data,
+            headers=["Date", "Collections"],
+            tablefmt="grid",
+            colalign=("left", "left"),
+            stralign="center"
+        )
+        
+        # Print with centered title
+        header = "Waste Collection Schedule for Tomorrow"
+        print(f"\n{header.center(len(table.splitlines()[0]))}")
+        print(table)
+        print()
+        
+    except ImportError:
+        # Fallback if tabulate is not installed
+        print("\n=== Waste Collection Schedule for tomorrow ===")
+        
+        for date_str in sorted(collections_by_date.keys()):
+            try:
+                date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                formatted_date = date_obj.strftime("%A, %B %d, %Y")
+            except ValueError:
+                formatted_date = date_str
+                
+            collections = collections_by_date[date_str]
+            if collections:
+                print(f"{formatted_date}: {', '.join(collections)}")
+            else:
+                print(f"{formatted_date}: No collections scheduled")
+                
+        print("===================================================\n")
 
 def send_pushover_notification(collection_types, config):
     pushover_config = config.get("notifications", {}).get("pushover", {})
@@ -326,21 +413,10 @@ def main():
     
     # Define mutually exclusive group for main actions
     action_group = parser.add_mutually_exclusive_group()
-    action_group.add_argument(
-        "--force", 
-        action="store_true", 
-        help="Run the script regardless of day (normally only runs on Sundays)"
-    )
-    action_group.add_argument(
-        "--extract-ids", 
-        action="store_true", 
-        help="Tool to extract place_id and service_id from a curl command"
-    )
-    action_group.add_argument(
-        "--config-help", 
-        action="store_true", 
-        help="Show detailed help about finding your place_id and service_id"
-    )
+    action_group.add_argument("-f", "--force", action="store_true", help="Run the script regardless of day (normally only runs on Sundays)")
+    action_group.add_argument("-e", "--extract-ids", action="store_true", help="Tool to extract place_id and service_id from a curl command")
+    action_group.add_argument("-c", "--config-help", action="store_true", help="Show detailed help about finding your place_id and service_id")
+    action_group.add_argument("-d", "--dump", action="store_true", help="Print the collection data for the tomorrow")
     
     # Parse arguments
     args = parser.parse_args()
@@ -354,9 +430,26 @@ def main():
     if args.extract_ids:
         extract_ids()
         return
+        
+    # Handle --dump
+    if args.dump:
+        # For dump mode, we don't need to validate notification settings
+        config = load_config(check_notifications=False)
+            
+        collection_data = get_collection_data(config)
+        if collection_data:
+            if len(sys.argv) > 2 and sys.argv[2] == "json":
+                # If explicitly asked for JSON
+                print(json.dumps(collection_data, indent=4))
+            else:
+                # Default to human-readable format
+                print_collection_summary(collection_data)
+        else:
+            print("Failed to retrieve collection data")
+        return
     
     # Normal run mode
-    config = load_config()
+    config = load_config(check_notifications=True)
     if not validate_notification_settings(config):
         print("Please update your configuration file with the required values.")
         sys.exit(1)
@@ -389,6 +482,8 @@ def main():
     
     if not notification_sent:
         print("Warning: No notifications were sent successfully")
+        # Display the data on screen if no notifications were sent
+        print_collection_summary(collection_data)
 
 if __name__ == "__main__":
     main()
